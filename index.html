@@ -109,6 +109,11 @@
   .seg button { border: 0; background: none; padding: 6px 10px; font-size: 13px; }
   .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
   .countdown { font-variant-numeric: tabular-nums; font-weight: 700; }
+  .flash { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 12px; padding: 24px 12px; font-size: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .flash .answer { border-top: 1px solid var(--line); padding-top: 12px; width: 100%; color: var(--accent); font-weight: 600; }
+  .boxes { display: inline-flex; gap: 3px; vertical-align: middle; }
+  .boxes i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+  .boxes i.on { background: var(--accent); }
 </style>
 </head>
 <body>
@@ -123,6 +128,7 @@
   <button data-tab="today"><span class="ic">☀</span>Today</button>
   <button data-tab="tasks"><span class="ic">✓</span>Tasks</button>
   <button data-tab="focus"><span class="ic">◷</span>Focus</button>
+  <button data-tab="cards"><span class="ic">❏</span>Cards</button>
   <button data-tab="timetable"><span class="ic">▦</span>Timetable</button>
   <button data-tab="subjects"><span class="ic">◆</span>Subjects</button>
   <button data-tab="stats"><span class="ic">▮</span>Progress</button>
@@ -146,6 +152,7 @@ function freshState() {
     tasks: [],
     sessions: [],      // { id, subjectId, start (ISO), minutes }
     timetable: [],     // { id, day 0-6, start "HH:MM", end "HH:MM", subjectId, label }
+    cards: [],         // flashcards: { id, subjectId, front, back, box 0-5, due "YYYY-MM-DD" }
     settings: { focus: 25, brk: 5, longBrk: 15, theme: "auto" },
   };
 }
@@ -267,6 +274,7 @@ function editSubject(subject) {
       if (!confirm(`Delete ${subject.name}? Its tasks and study time stay, without a subject.`)) return false;
       S.subjects = S.subjects.filter((x) => x.id !== subject.id);
       S.tasks.forEach((t) => { if (t.subjectId === subject.id) t.subjectId = ""; });
+      S.cards.forEach((c) => { if (c.subjectId === subject.id) c.subjectId = ""; });
       S.timetable = S.timetable.filter((b) => b.subjectId !== subject.id);
       save(); render(); toast("Subject deleted"); return;
     }
@@ -330,11 +338,11 @@ function dataDialog() {
       <button class="btn primary" type="button" id="expBtn">Download backup</button>
       <button class="btn" type="button" id="impBtn">Restore from backup…</button>
     </div>
-    <p class="small muted">${S.subjects.length} subjects · ${S.tasks.length} tasks · ${S.sessions.length} study sessions · ${S.timetable.length} timetable blocks</p>
+    <p class="small muted">${S.subjects.length} subjects · ${S.tasks.length} tasks · ${S.cards.length} flashcards · ${S.sessions.length} study sessions · ${S.timetable.length} timetable blocks</p>
     <div class="spread" style="margin-top:16px"><button class="btn danger" value="wipe" formnovalidate>Erase everything</button><button class="btn" value="cancel" formnovalidate>Close</button></div>
   `, (fd, action) => {
     if (action === "wipe") {
-      if (!confirm("Erase all subjects, tasks, study time and your timetable from this browser? Download a backup first if you might want it.")) return false;
+      if (!confirm("Erase all subjects, tasks, flashcards, study time and your timetable from this browser? Download a backup first if you might want it.")) return false;
       S = freshState(); save(); render(); toast("Everything erased");
     }
   }, (form) => {
@@ -358,6 +366,98 @@ $("#importFile").addEventListener("change", async (e) => {
     S = Object.assign(freshState(), d); save(); $("#dlg").close(); render(); toast("Backup restored");
   } catch (err) { toast("That file is not a Study Planner backup."); }
 });
+
+/* ================= flashcards ================= */
+// Leitner boxes: a card you know moves up a box and comes back after a longer gap.
+const BOX_DAYS = [0, 1, 3, 7, 14, 30];
+function addDays(n) { const d = new Date(); d.setDate(d.getDate() + n); return ymd(d); }
+function dueCards(subjectId) { const t = ymd(); return S.cards.filter((c) => c.due <= t && (!subjectId || c.subjectId === subjectId)); }
+let cardFilter = "";
+let review = null; // { queue: [card ids], shown: false, done: 0 }
+function startReview() {
+  const queue = dueCards(cardFilter).map((c) => c.id);
+  if (!queue.length) { toast("No cards are due"); return; }
+  for (let i = queue.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [queue[i], queue[j]] = [queue[j], queue[i]]; }
+  review = { queue, shown: false, done: 0 };
+  render();
+}
+function gradeCard(grade) {
+  const c = S.cards.find((x) => x.id === review.queue[0]);
+  review.queue.shift();
+  if (c) {
+    if (grade === "again") { c.box = 0; c.due = ymd(); review.queue.push(c.id); }   // comes back at the end of this review
+    else { c.box = Math.min(5, c.box + (grade === "easy" ? 2 : 1)); c.due = addDays(BOX_DAYS[c.box]); review.done++; }
+    save();
+  }
+  review.shown = false;
+  if (!review.queue.length) { toast(`Review finished: ${review.done} card${review.done === 1 ? "" : "s"}`); review = null; }
+  render();
+}
+function editCard(card) {
+  const c = card || { front: "", back: "", subjectId: cardFilter || S.subjects[0]?.id || "" };
+  openDialog(`
+    <h2>${card ? "Edit card" : "New flashcard"}</h2>
+    <label class="f" for="c_sub">Subject</label><select id="c_sub" name="subjectId">${subjectOptions(c.subjectId)}</select>
+    <label class="f" for="c_front">Front (question)</label>
+    <textarea id="c_front" name="front" rows="3" required maxlength="1000" placeholder="e.g. What is the powerhouse of the cell?">${esc(c.front)}</textarea>
+    <label class="f" for="c_back">Back (answer)</label>
+    <textarea id="c_back" name="back" rows="3" required maxlength="2000" placeholder="e.g. The mitochondrion">${esc(c.back)}</textarea>
+    ${dlgButtons(card ? `<button class="btn danger" value="delete" formnovalidate>Delete</button>` : `<button class="btn" value="more">Save and add another</button>`)}
+  `, (fd, action) => {
+    if (action === "delete") { S.cards = S.cards.filter((x) => x.id !== card.id); save(); render(); toast("Card deleted"); return; }
+    const data = { front: fd.front.trim(), back: fd.back.trim(), subjectId: fd.subjectId };
+    if (!data.front || !data.back) return false;
+    if (card) Object.assign(card, data); else S.cards.push({ id: uid(), box: 0, due: ymd(), created: new Date().toISOString(), ...data });
+    save(); render(); toast(card ? "Card updated" : "Card added");
+    if (action === "more") { cardFilter = cardFilter && data.subjectId; setTimeout(() => editCard(), 0); }
+  });
+}
+function addManyCards() {
+  openDialog(`
+    <h2>Add several cards</h2>
+    <p class="muted small">One card per line, with the question and answer separated by <b>|</b></p>
+    <label class="f" for="mc_sub">Subject</label><select id="mc_sub" name="subjectId">${subjectOptions(cardFilter || S.subjects[0]?.id || "")}</select>
+    <label class="f" for="mc_t">Cards</label>
+    <textarea id="mc_t" name="text" rows="8" required placeholder="Capital of France | Paris&#10;H2O | Water&#10;Speed of light | 3.0 × 10^8 m/s"></textarea>
+    ${dlgButtons()}
+  `, (fd) => {
+    const rows = fd.text.split("\n").map((l) => l.split("|")).filter((p) => p.length >= 2 && p[0].trim() && p.slice(1).join("|").trim());
+    if (!rows.length) { toast("No cards found. Put a | between each question and its answer."); return false; }
+    rows.forEach((p) => S.cards.push({ id: uid(), box: 0, due: ymd(), created: new Date().toISOString(), subjectId: fd.subjectId, front: p[0].trim(), back: p.slice(1).join("|").trim() }));
+    save(); render(); toast(`Added ${rows.length} card${rows.length === 1 ? "" : "s"}`);
+  });
+}
+function viewCards() {
+  if (review) {
+    const c = S.cards.find((x) => x.id === review.queue[0]);
+    if (!c) { review = null; return viewCards(); }
+    return `<div class="spread"><h1>Review</h1><button class="btn" data-act="endReview">Stop</button></div>
+    <div class="card" style="max-width:640px;margin:0 auto">
+      <div class="spread small muted"><span class="row" style="gap:6px"><span class="dot" style="background:${subjColor(c.subjectId)}"></span>${esc(subjName(c.subjectId))}</span><span>${review.queue.length} left</span></div>
+      <div class="flash"><div>${esc(c.front)}</div>${review.shown ? `<div class="answer">${esc(c.back)}</div>` : ""}</div>
+      ${review.shown
+        ? `<div class="row" style="justify-content:center"><button class="btn danger" data-act="grade" data-g="again">Again</button><button class="btn primary" data-act="grade" data-g="good">Good</button><button class="btn" data-act="grade" data-g="easy">Easy</button></div>
+           <p class="small faint" style="text-align:center;margin-bottom:0">Again: see it once more now. Good: later. Easy: much later.</p>`
+        : `<div class="row" style="justify-content:center"><button class="btn primary" data-act="showAnswer">Show answer</button></div>`}
+    </div>`;
+  }
+  const list = S.cards.filter((c) => !cardFilter || c.subjectId === cardFilter).sort((a, b) => a.due.localeCompare(b.due));
+  const due = dueCards(cardFilter).length;
+  const when = (c) => { const n = daysUntil(c.due); return n <= 0 ? `<span class="overdue">Due now</span>` : n === 1 ? "Tomorrow" : `In ${n} days`; };
+  return `<div class="spread"><h1>Flashcards</h1><div class="row"><button class="btn" data-act="manyCards">+ Several</button><button class="btn primary" data-act="newCard">+ New card</button></div></div>
+  <div class="card">
+    <div class="spread" style="margin-bottom:8px">
+      <select data-act="cardFilter" style="width:auto" aria-label="Subject"><option value="">All subjects</option>${S.subjects.map((s) => `<option value="${s.id}" ${cardFilter === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <button class="btn ${due ? "primary" : ""}" data-act="startReview" ${due ? "" : "disabled"}>${due ? `Review ${due} due card${due === 1 ? "" : "s"}` : "Nothing due"}</button>
+    </div>
+    ${list.length ? `<ul class="list">${list.map((c) => `<li>
+        <div class="grow"><div class="title">${esc(c.front)}</div>
+        <div class="row small muted" style="gap:6px 10px"><span class="row" style="gap:5px"><span class="dot" style="background:${subjColor(c.subjectId)}"></span>${esc(subjName(c.subjectId))}</span><span>${when(c)}</span>
+        <span class="boxes" title="How well you know it">${[1, 2, 3, 4, 5].map((i) => `<i class="${c.box >= i ? "on" : ""}"></i>`).join("")}</span></div></div>
+        <button class="btn sm ghost" data-act="editCard" data-id="${c.id}">Edit</button></li>`).join("")}</ul>`
+      : `<p class="empty">No flashcards yet. Add questions and answers, then review them a little each day. Cards you know come back less often; cards you miss come back sooner.</p>`}
+  </div>`;
+}
 
 /* ================= focus timer ================= */
 const timer = {
@@ -481,14 +581,14 @@ function viewToday() {
   const mins = minutesOn(today);
   const st = streak();
 
-  if (!S.subjects.length && !S.tasks.length) {
+  if (!S.subjects.length && !S.tasks.length && !S.cards.length) {
     return `<h1>Welcome</h1>
       <div class="card">
         <h2>Set up your planner in three steps</h2>
         <ol class="muted" style="padding-left:20px;margin:0 0 12px">
           <li>Add your <b>subjects</b>, with exam dates if you have them.</li>
           <li>Add <b>tasks</b>: homework, revision, past papers.</li>
-          <li>Plan your week in the <b>timetable</b>, then study with the <b>focus timer</b>.</li>
+          <li>Plan your week in the <b>timetable</b>, then study with the <b>focus timer</b> and <b>flashcards</b>.</li>
         </ol>
         <div class="row"><button class="btn primary" data-act="newSubject">Add a subject</button><button class="btn" data-act="newTask">Add a task</button></div>
         <p class="small faint" style="margin-bottom:0">Everything is saved in this browser. Use Backup (top right) to keep a copy.</p>
@@ -501,6 +601,7 @@ function viewToday() {
     <div class="card"><div class="muted small">Study streak</div><div class="stat">${st} day${st === 1 ? "" : "s"}</div></div>
     <div class="card"><div class="muted small">Open tasks</div><div class="stat">${open.length}</div></div>
   </div>
+  ${dueCards().length ? `<div class="card spread" style="margin-top:14px"><div><b>${dueCards().length} flashcard${dueCards().length === 1 ? "" : "s"}</b> <span class="muted">due for review today</span></div><button class="btn primary" data-act="reviewNow">Review</button></div>` : ""}
   <div class="grid two" style="margin-top:14px">
     <div class="card">
       <div class="spread"><h2>Due now</h2><button class="btn sm" data-act="newTask">+ Task</button></div>
@@ -652,13 +753,13 @@ function viewStats() {
 }
 
 /* ================= render & events ================= */
-const VIEWS = { today: viewToday, tasks: viewTasks, focus: viewFocus, timetable: viewTimetable, subjects: viewSubjects, stats: viewStats };
+const VIEWS = { today: viewToday, tasks: viewTasks, focus: viewFocus, cards: viewCards, timetable: viewTimetable, subjects: viewSubjects, stats: viewStats };
 function render() {
   $("#view").innerHTML = VIEWS[tab]();
   document.querySelectorAll("nav.tabs button").forEach((b) => b.setAttribute("aria-current", b.dataset.tab === tab ? "page" : "false"));
   $("#todayLabel").textContent = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
 }
-function go(t) { tab = t; try { localStorage.setItem(KEY + ":tab", t); } catch (e) {} render(); window.scrollTo(0, 0); }
+function go(t) { if (t !== "cards") review = null; tab = t; try { localStorage.setItem(KEY + ":tab", t); } catch (e) {} render(); window.scrollTo(0, 0); }
 
 document.querySelector("nav.tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) go(b.dataset.tab); });
 $("#dataBtn").onclick = dataDialog;
@@ -700,6 +801,14 @@ $("#view").addEventListener("click", (e) => {
     case "skip": skipPhase(); break;
     case "logManual": logManual(); break;
     case "addBlock": addBlock(Number(el.dataset.day)); break;
+    case "newCard": editCard(); break;
+    case "manyCards": addManyCards(); break;
+    case "editCard": editCard(S.cards.find((c) => c.id === id)); break;
+    case "startReview": startReview(); break;
+    case "reviewNow": cardFilter = ""; tab = "cards"; startReview(); break;
+    case "showAnswer": review.shown = true; render(); break;
+    case "grade": gradeCard(el.dataset.g); break;
+    case "endReview": review = null; render(); break;
     case "delBlock": S.timetable = S.timetable.filter((b) => b.id !== id); save(); render(); break;
   }
 });
@@ -707,6 +816,7 @@ $("#view").addEventListener("change", (e) => {
   const el = e.target;
   if (el.dataset.act === "filterSubject") { taskFilter.subject = el.value; render(); }
   if (el.dataset.act === "timerSubject") { timer.subjectId = el.value; }
+  if (el.dataset.act === "cardFilter") { cardFilter = el.value; render(); }
   if (el.dataset.act === "setting") {
     const v = Math.round(Number(el.value));
     if (v >= 1 && v <= Number(el.max)) {
@@ -714,6 +824,11 @@ $("#view").addEventListener("change", (e) => {
       if (!timer.running) { timer.left = 0; render(); }
     } else { toast(`Choose between 1 and ${el.max} minutes`); el.value = S.settings[el.dataset.k]; }
   }
+});
+document.addEventListener("keydown", (e) => {
+  if (!review || tab !== "cards" || $("#dlg").open) return;
+  if (!review.shown && (e.key === " " || e.key === "Enter")) { e.preventDefault(); review.shown = true; render(); }
+  else if (review.shown && ["1", "2", "3"].includes(e.key)) gradeCard(["again", "good", "easy"][Number(e.key) - 1]);
 });
 window.addEventListener("beforeunload", (e) => { if (timer.running && timer.phase === "focus") { e.preventDefault(); e.returnValue = ""; } });
 // redraw when the day changes or the tab comes back into view
