@@ -50,6 +50,13 @@ app.whenReady().then(() => {
   });
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
+      {
+        label: 'Go',
+        submenu: [
+          { label: 'Back', accelerator: 'Alt+Left', click: (_i, w) => w && w.webContents.navigationHistory.canGoBack() && w.webContents.navigationHistory.goBack() },
+          { label: 'Home', accelerator: 'Alt+Home', click: (_i, w) => w && w.loadURL(startUrl) },
+        ],
+      },
       { label: 'View', submenu: [{ role: 'reload' }, { role: 'togglefullscreen' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
     ])
   );
