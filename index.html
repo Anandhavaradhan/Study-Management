@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f766e">
 <title>Study Planner</title>
+<meta name="description" content="Tasks, focus timer, timetable, flashcards and progress for your studies. Works offline.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <style>
   :root {
     --bg: #f5f6f4; --panel: #ffffff; --ink: #18211f; --muted: #5b6763; --faint: #8b9692;
@@ -714,6 +718,11 @@ $("#view").addEventListener("change", (e) => {
 window.addEventListener("beforeunload", (e) => { if (timer.running && timer.phase === "focus") { e.preventDefault(); e.returnValue = ""; } });
 // redraw when the day changes or the tab comes back into view
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !timer.running) render(); });
+
+// Offline support and "install as app" on the website (the Android and Windows apps carry the files already)
+if ("serviceWorker" in navigator && location.protocol === "https:" && location.hostname !== "appassets.androidplatform.net") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
 
 applyTheme();
 try { const t = localStorage.getItem(KEY + ":tab"); if (t && VIEWS[t]) tab = t; } catch (e) {}
